@@ -2679,7 +2679,7 @@ async function renderAdminUserList(){
           <div class="ur-perms">${permHtml||'<span style="font-size:.72rem;color:var(--muted)">No tab access</span>'}</div>
         </div>
         <div class="ur-actions">
-          ${!isSelf?`<button class="btn bo btn-sm" onclick="openPermModal(${u.id},'${escHtml(u.name)}','${escHtml(u.email)}','${u.role}',${JSON.stringify(tabs)})">&#9998; Permissions</button>`:''}
+          ${!isSelf?`<button class="btn bo btn-sm" onclick="openPermModalById(${u.id})" data-uid="${u.id}" data-name="${escAttr(u.name)}" data-email="${escAttr(u.email)}" data-role="${u.role}" data-tabs="${escAttr(JSON.stringify(tabs))}">&#9998; Permissions</button>`:''}
           ${u.active&&!isSelf?`<button class="btn bg" onclick="revokeUser(${u.id},'${escHtml(u.name)}')">&#128683; Revoke</button>`:''}
           ${!u.active?`<button class="btn bt btn-sm" onclick="restoreUser(${u.id},'${escHtml(u.name)}')">&#9654; Restore</button>`:''}
           <button class="btn bo btn-sm" onclick="adminResetPwd(${u.id},'${escHtml(u.name)}','${escHtml(u.email)}')">&#128272; Reset Pwd</button>
@@ -2692,6 +2692,20 @@ async function renderAdminUserList(){
 }
 
 /* ── Edit permissions modal ── */
+/* ── Safe attribute escaping ── */
+function escAttr(s){ return String(s||'').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
+/* ── Open perm modal by reading data attributes ── */
+function openPermModalById(id){
+  const btn = document.querySelector(`button[data-uid="${id}"]`);
+  if(!btn) return;
+  const name  = btn.getAttribute('data-name');
+  const email = btn.getAttribute('data-email');
+  const role  = btn.getAttribute('data-role');
+  const tabs  = JSON.parse(btn.getAttribute('data-tabs')||'[]');
+  openPermModal(id, name, email, role, tabs);
+}
+
 let _permEditId = null;
 function openPermModal(id, name, email, role, tabs){
   _permEditId = id;
