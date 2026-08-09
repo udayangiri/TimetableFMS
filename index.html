@@ -2371,7 +2371,8 @@ async function doLogin(){
       body: JSON.stringify({email, password:pwd})
     });
     authToken   = data.token;
-    currentUser = { ...data.user, tabs: data.user.tab_perms };
+    const tp = data.user.tab_perms;
+    currentUser = { ...data.user, tabs: Array.isArray(tp)?tp:JSON.parse(tp||'[]') };
     sessionStorage.setItem(SESS_KEY, authToken);
     document.getElementById('auth-overlay').classList.add('hidden');
     applyPermissions();
@@ -2406,7 +2407,8 @@ async function restoreSession(){
   try{
     authToken = token;
     const data = await apiFetch('/api/auth/me');
-    currentUser = { ...data, tabs: data.tab_perms };
+    const tp2 = data.tab_perms;
+    currentUser = { ...data, tabs: Array.isArray(tp2)?tp2:JSON.parse(tp2||'[]') };
     document.getElementById('auth-overlay').classList.add('hidden');
     applyPermissions();
     renderUserBadge();
