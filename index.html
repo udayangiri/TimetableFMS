@@ -2371,7 +2371,7 @@ async function doLogin(){
       body: JSON.stringify({email, password:pwd})
     });
     authToken   = data.token;
-    const tp = data.user.tab_perms;
+    const tp = data.user.tabPerms || data.user.tab_perms;
     currentUser = { ...data.user, tabs: Array.isArray(tp)?tp:JSON.parse(tp||'[]') };
     sessionStorage.setItem(SESS_KEY, authToken);
     document.getElementById('auth-overlay').classList.add('hidden');
@@ -2407,7 +2407,7 @@ async function restoreSession(){
   try{
     authToken = token;
     const data = await apiFetch('/api/auth/me');
-    const tp2 = data.tab_perms;
+    const tp2 = data.tabPerms || data.tab_perms;
     currentUser = { ...data, tabs: Array.isArray(tp2)?tp2:JSON.parse(tp2||'[]') };
     document.getElementById('auth-overlay').classList.add('hidden');
     applyPermissions();
@@ -2661,7 +2661,8 @@ async function renderAdminUserList(){
 
     el.innerHTML = users.map((u)=>{
       const isSelf = currentUser&&u.email===currentUser.email;
-      const tabs   = Array.isArray(u.tab_perms)?u.tab_perms:JSON.parse(u.tab_perms||'[]');
+      const rawtp  = u.tabPerms || u.tab_perms;
+      const tabs   = Array.isArray(rawtp)?rawtp:JSON.parse(rawtp||'[]');
       const permHtml = u.role==='admin'
         ? '<span class="perm-chip edit">&#128737; Full Admin Access</span>'
         : TAB_NAMES.map((n,ti)=>{
