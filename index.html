@@ -2338,35 +2338,22 @@ function refreshFacViewIfOpen(){
 // ═══════════════════════════════════════════════════
 // AUTH SYSTEM
 // ═══════════════════════════════════════════════════
-const AUTH_KEY  = 'stt_auth_users';   // localStorage key for user registry
-const SESS_KEY  = 'stt_session';      // sessionStorage key for logged-in session
+// BACKEND CONFIG — points to Render server
+const API_BASE  = 'https://timetable-backend-my4h.onrender.com';
+const SESS_KEY  = 'stt_jwt_token';   // sessionStorage key for JWT token
 const TAB_NAMES = ['Faculty','Subjects','Sections','Assignments','Timetable','Faculty View'];
-// Permissions per tab: 'none' | 'view' | 'edit'
 
 let currentUser = null; // set on login
+let authToken   = null; // JWT token from backend
 
-/* ── Hash password (SHA-256 via Web Crypto) ── */
-async function hashPwd(pwd){
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(pwd));
-  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
-}
-
-/* ── Load user registry from localStorage ── */
-function loadUsers(){ try{return JSON.parse(localStorage.getItem(AUTH_KEY)||'[]');}catch{return[];} }
-function saveUsers(users){ localStorage.setItem(AUTH_KEY, JSON.stringify(users)); }
-
-/* ── Seed default admin on first run ── */
-async function seedAdmin(){
-  const users = loadUsers();
-  if(users.length===0){
-    const hash = await hashPwd('admin123');
-    users.push({
-      email:'admin@school.edu', name:'Administrator',
-      role:'admin', pwdHash:hash, active:true,
-      tabs: TAB_NAMES.map(()=>'edit') // admin gets edit on all
-    });
-    saveUsers(users);
-  }
+/* ── Central API fetch helper ── */
+async function apiFetch(path, options={}){
+  const headers = { 'Content-Type':'application/json', ...(options.headers||{}) };
+  if(authToken) headers['Authorization'] = 'Bearer '+authToken;
+  const res = await fetch(API_BASE+path, { ...options, headers });
+  const data = await res.json().catch(()=>({}));
+  if(!res.ok) throw new Error(data.error||'Server error ('+res.status+')');
+  return data;
 }
 
 /* ── LOGIN ── */
@@ -2378,20 +2365,20 @@ async function doLogin(){
 
   if(!email||!pwd){ showAuthErr('Please enter your email and password.'); return; }
 
-  const users = loadUsers();
-  const user  = users.find(u=>u.email===email);
-  if(!user){ showAuthErr('No account found for this email address.'); return; }
-  if(!user.active){ showAuthErr('Your access has been revoked. Contact the admin.'); return; }
-
-  const hash = await hashPwd(pwd);
-  if(hash !== user.pwdHash){ showAuthErr('Incorrect password. Please try again.'); return; }
-
-  // Success
-  currentUser = user;
-  sessionStorage.setItem(SESS_KEY, JSON.stringify({email: user.email}));
-  document.getElementById('auth-overlay').classList.add('hidden');
-  applyPermissions();
-  renderUserBadge();
+  try{
+    const data = await apiFetch('/api/auth/login',{
+      method:'POST',
+      body: JSON.stringify({email, password:pwd})
+    });
+    authToken   = data.token;
+    currentUser = { ...data.user, tabs: data.user.tab_perms };
+    sessionStorage.setItem(SESS_KEY, authToken);
+    document.getElementById('auth-overlay').classList.add('hidden');
+    applyPermissions();
+    renderUserBadge();
+  } catch(e){
+    showAuthErr(e.message||'Login failed. Check your email and password.');
+  }
 }
 
 function showAuthErr(msg){
@@ -2403,6 +2390,7 @@ function showAuthErr(msg){
 function doLogout(){
   if(!confirm('Sign out?')) return;
   currentUser = null;
+  authToken   = null;
   sessionStorage.removeItem(SESS_KEY);
   document.getElementById('auth-overlay').classList.remove('hidden');
   document.getElementById('login-pwd').value='';
@@ -2413,19 +2401,19 @@ function doLogout(){
 
 /* ── RESTORE SESSION ── */
 async function restoreSession(){
-  await seedAdmin();
-  const sess = sessionStorage.getItem(SESS_KEY);
-  if(!sess) return; // stay on login screen
+  const token = sessionStorage.getItem(SESS_KEY);
+  if(!token) return; // stay on login screen
   try{
-    const {email} = JSON.parse(sess);
-    const users = loadUsers();
-    const user  = users.find(u=>u.email===email);
-    if(!user||!user.active){ sessionStorage.removeItem(SESS_KEY); return; }
-    currentUser = user;
+    authToken = token;
+    const data = await apiFetch('/api/auth/me');
+    currentUser = { ...data, tabs: data.tab_perms };
     document.getElementById('auth-overlay').classList.add('hidden');
     applyPermissions();
     renderUserBadge();
-  }catch{ sessionStorage.removeItem(SESS_KEY); }
+  } catch{
+    authToken = null;
+    sessionStorage.removeItem(SESS_KEY);
+  }
 }
 
 /* ── APPLY PERMISSIONS ── */
@@ -2586,28 +2574,27 @@ function openChangePwd(){
   document.getElementById('pwd-modal').classList.add('open');
 }
 async function doChangePwd(){
-  const oldPwd = document.getElementById('pwd-old').value;
-  const newPwd = document.getElementById('pwd-new').value;
+  const oldPwd  = document.getElementById('pwd-old').value;
+  const newPwd  = document.getElementById('pwd-new').value;
   const confirm2= document.getElementById('pwd-confirm').value;
-  const errEl  = document.getElementById('pwd-err');
+  const errEl   = document.getElementById('pwd-err');
   errEl.style.display='none';
 
   if(!oldPwd||!newPwd||!confirm2){ errEl.textContent='All fields are required.'; errEl.style.display='block'; return; }
   if(newPwd.length<6){ errEl.textContent='New password must be at least 6 characters.'; errEl.style.display='block'; return; }
   if(newPwd!==confirm2){ errEl.textContent='New passwords do not match.'; errEl.style.display='block'; return; }
 
-  const oldHash = await hashPwd(oldPwd);
-  if(oldHash!==currentUser.pwdHash){ errEl.textContent='Current password is incorrect.'; errEl.style.display='block'; return; }
-
-  const newHash = await hashPwd(newPwd);
-  const users   = loadUsers();
-  const idx     = users.findIndex(u=>u.email===currentUser.email);
-  if(idx<0) return;
-  users[idx].pwdHash = newHash;
-  saveUsers(users);
-  currentUser.pwdHash = newHash;
-  document.getElementById('pwd-modal').classList.remove('open');
-  alert('✅ Password updated successfully!');
+  try{
+    await apiFetch('/api/auth/change-password',{
+      method:'POST',
+      body: JSON.stringify({ currentPassword:oldPwd, newPassword:newPwd })
+    });
+    document.getElementById('pwd-modal').classList.remove('open');
+    alert('✅ Password updated successfully!');
+  } catch(e){
+    errEl.textContent = e.message||'Failed to change password.';
+    errEl.style.display='block';
+  }
 }
 
 // ═══════════════════════════════════════════════════
@@ -2639,144 +2626,132 @@ async function adminAddUser(){
   if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){ alert('Enter a valid email address.'); return; }
   if(pwd.length<6){ alert('Password must be at least 6 characters.'); return; }
 
-  const users = loadUsers();
-  if(users.find(u=>u.email===email)){ alert('A user with this email already exists.'); return; }
-
-  const tabs = TAB_NAMES.map((_,i)=>{
+  const tab_perms = TAB_NAMES.map((_,i)=>{
     if(role==='admin') return 'edit';
     return document.getElementById('adm-perm-'+i)?.value||'none';
   });
-  const hash = await hashPwd(pwd);
-  users.push({email,name,role,pwdHash:hash,active:true,tabs});
-  saveUsers(users);
 
-  // Clear form
-  document.getElementById('adm-email').value='';
-  document.getElementById('adm-name').value='';
-  document.getElementById('adm-pwd').value='';
-  document.getElementById('adm-role').value='user';
-  buildAdmPermMatrix();
-  renderAdminUserList();
-  alert(`✅ User "${name}" (${email}) added successfully!\nShare the URL and their password: ${pwd}`);
+  try{
+    await apiFetch('/api/admin/users',{
+      method:'POST',
+      body: JSON.stringify({email, name, role, password:pwd, tab_perms})
+    });
+    document.getElementById('adm-email').value='';
+    document.getElementById('adm-name').value='';
+    document.getElementById('adm-pwd').value='';
+    document.getElementById('adm-role').value='user';
+    buildAdmPermMatrix();
+    await renderAdminUserList();
+    alert(`✅ User "${name}" (${email}) added successfully!\nShare the app URL and their password: ${pwd}`);
+  } catch(e){
+    alert('Error adding user: '+(e.message||'Unknown error'));
+  }
 }
 
 /* ── Render user list in admin panel ── */
-function renderAdminUserList(){
-  const users = loadUsers();
-  const el    = document.getElementById('adm-user-list');
+async function renderAdminUserList(){
+  const el = document.getElementById('adm-user-list');
   if(!el) return;
-  if(!users.length){ el.innerHTML='<p style="color:var(--muted);font-size:.84rem">No users yet.</p>'; return; }
+  el.innerHTML='<p style="color:var(--muted);font-size:.84rem">Loading...</p>';
+  try{
+    const users = await apiFetch('/api/admin/users');
+    if(!users.length){ el.innerHTML='<p style="color:var(--muted);font-size:.84rem">No users yet.</p>'; return; }
 
-  el.innerHTML = users.map((u,i)=>{
-    const isSelf = currentUser&&u.email===currentUser.email;
-    const permHtml = u.role==='admin'
-      ? '<span class="perm-chip edit">&#128737; Full Admin Access</span>'
-      : TAB_NAMES.map((n,ti)=>{
-          const p=u.tabs?.[ti]||'none';
-          if(p==='none') return '';
-          return `<span class="perm-chip ${p}">${p==='edit'?'&#9998;':'&#128065;'} Tab ${ti+1} ${escHtml(n)} (${p})</span>`;
-        }).join('');
+    el.innerHTML = users.map((u)=>{
+      const isSelf = currentUser&&u.email===currentUser.email;
+      const tabs   = Array.isArray(u.tab_perms)?u.tab_perms:JSON.parse(u.tab_perms||'[]');
+      const permHtml = u.role==='admin'
+        ? '<span class="perm-chip edit">&#128737; Full Admin Access</span>'
+        : TAB_NAMES.map((n,ti)=>{
+            const p=tabs[ti]||'none';
+            if(p==='none') return '';
+            return `<span class="perm-chip ${p}">${p==='edit'?'&#9998;':'&#128065;'} Tab ${ti+1} ${escHtml(n)} (${p})</span>`;
+          }).join('');
 
-    return `<div class="user-row ${u.active?'':'revoked'}">
-      <div class="ur-info">
-        <div class="ur-email">${escHtml(u.name)} ${isSelf?'<span style="font-size:.68rem;background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:10px;font-weight:600">YOU</span>':''}</div>
-        <div style="font-size:.75rem;color:var(--muted)">${escHtml(u.email)}</div>
-        <span class="ur-role ${u.active?u.role:'revoked'}">${u.active?u.role:'revoked'}</span>
-        <div class="ur-perms">${permHtml||'<span style="font-size:.72rem;color:var(--muted)">No tab access</span>'}</div>
-      </div>
-      <div class="ur-actions">
-        ${!isSelf?`<button class="btn bo btn-sm" onclick="openPermModal(${i})">&#9998; Permissions</button>`:''}
-        ${u.active&&!isSelf?`<button class="btn bg" onclick="revokeUser(${i})">&#128683; Revoke</button>`:''}
-        ${!u.active?`<button class="btn bt btn-sm" onclick="restoreUser(${i})">&#9654; Restore</button>`:''}
-        ${!isSelf?`<button class="btn bg" onclick="deleteUser(${i})" style="background:transparent;border-color:#888;color:#888">&#128465;</button>`:''}
-        <button class="btn bo btn-sm" onclick="adminResetPwd(${i})">&#128272; Reset Pwd</button>
-      </div>
-    </div>`;
-  }).join('');
+      return `<div class="user-row ${u.active?'':'revoked'}">
+        <div class="ur-info">
+          <div class="ur-email">${escHtml(u.name)} ${isSelf?'<span style="font-size:.68rem;background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:10px;font-weight:600">YOU</span>':''}</div>
+          <div style="font-size:.75rem;color:var(--muted)">${escHtml(u.email)}</div>
+          <span class="ur-role ${u.active?u.role:'revoked'}">${u.active?u.role:'revoked'}</span>
+          <div class="ur-perms">${permHtml||'<span style="font-size:.72rem;color:var(--muted)">No tab access</span>'}</div>
+        </div>
+        <div class="ur-actions">
+          ${!isSelf?`<button class="btn bo btn-sm" onclick="openPermModal(${u.id},'${escHtml(u.name)}','${escHtml(u.email)}','${u.role}',${JSON.stringify(tabs)})">&#9998; Permissions</button>`:''}
+          ${u.active&&!isSelf?`<button class="btn bg" onclick="revokeUser(${u.id},'${escHtml(u.name)}')">&#128683; Revoke</button>`:''}
+          ${!u.active?`<button class="btn bt btn-sm" onclick="restoreUser(${u.id},'${escHtml(u.name)}')">&#9654; Restore</button>`:''}
+          <button class="btn bo btn-sm" onclick="adminResetPwd(${u.id},'${escHtml(u.name)}','${escHtml(u.email)}')">&#128272; Reset Pwd</button>
+        </div>
+      </div>`;
+    }).join('');
+  } catch(e){
+    el.innerHTML=`<p style="color:red;font-size:.84rem">Error loading users: ${e.message}</p>`;
+  }
 }
 
 /* ── Edit permissions modal ── */
-let _permEditIdx = null;
-function openPermModal(idx){
-  const users = loadUsers();
-  const u = users[idx];
-  _permEditIdx = idx;
-  document.getElementById('perm-modal-desc').textContent=`Editing permissions for: ${u.name} (${u.email})`;
+let _permEditId = null;
+function openPermModal(id, name, email, role, tabs){
+  _permEditId = id;
+  document.getElementById('perm-modal-desc').textContent=`Editing permissions for: ${name} (${email})`;
   const matrix = document.getElementById('perm-matrix');
-  matrix.innerHTML = TAB_NAMES.map((name,i)=>`
+  matrix.innerHTML = TAB_NAMES.map((tname,i)=>`
     <div class="perm-cell">
-      <label>Tab ${i+1}: ${name}</label>
-      <select id="pm-perm-${i}" ${u.role==='admin'?'disabled':''}>
-        <option value="none" ${(u.tabs?.[i]||'none')==='none'?'selected':''}>No Access</option>
-        <option value="view" ${(u.tabs?.[i]||'none')==='view'?'selected':''}>View Only</option>
-        <option value="edit" ${(u.tabs?.[i]||'none')==='edit'?'selected':''}>Edit</option>
+      <label>Tab ${i+1}: ${tname}</label>
+      <select id="pm-perm-${i}" ${role==='admin'?'disabled':''}>
+        <option value="none" ${(tabs[i]||'none')==='none'?'selected':''}>No Access</option>
+        <option value="view" ${(tabs[i]||'none')==='view'?'selected':''}>View Only</option>
+        <option value="edit" ${(tabs[i]||'none')==='edit'?'selected':''}>Edit</option>
       </select>
     </div>`).join('');
-  if(u.role==='admin') matrix.innerHTML+='<p style="font-size:.78rem;color:var(--muted);grid-column:1/-1;margin-top:4px">&#9432; Admins always have full edit access to all tabs.</p>';
+  if(role==='admin') matrix.innerHTML+='<p style="font-size:.78rem;color:var(--muted);grid-column:1/-1;margin-top:4px">&#9432; Admins always have full edit access to all tabs.</p>';
   document.getElementById('perm-modal').classList.add('open');
 }
 
-function savePermissions(){
-  if(_permEditIdx===null) return;
-  const users = loadUsers();
-  const u = users[_permEditIdx];
-  if(u.role!=='admin'){
-    u.tabs = TAB_NAMES.map((_,i)=>document.getElementById('pm-perm-'+i)?.value||'none');
+async function savePermissions(){
+  if(!_permEditId) return;
+  const tab_perms = TAB_NAMES.map((_,i)=>document.getElementById('pm-perm-'+i)?.value||'none');
+  try{
+    await apiFetch(`/api/admin/users/${_permEditId}/permissions`,{
+      method:'PATCH',
+      body: JSON.stringify({tab_perms})
+    });
+    document.getElementById('perm-modal').classList.remove('open');
+    await renderAdminUserList();
+    alert('✅ Permissions saved.');
+  } catch(e){
+    alert('Error saving permissions: '+(e.message||'Unknown error'));
   }
-  saveUsers(users);
-  // If the affected user is currently logged in, refresh their permissions live
-  if(currentUser&&currentUser.email===u.email){
-    currentUser.tabs=u.tabs;
-    applyPermissions();
-  }
-  document.getElementById('perm-modal').classList.remove('open');
-  renderAdminUserList();
-  alert('✅ Permissions saved. User will see changes on next login (or immediately if they are currently signed in).');
 }
 
-function revokeUser(idx){
-  const users=loadUsers();
-  const target=users[idx];
-  if(!target) return;
-  if(!confirm(`Revoke access for ${target.name}? They will be blocked on next login.`)) return;
-  users[idx].active=false;
-  saveUsers(users);
-  renderAdminUserList();
-  // FIX: alert BEFORE logout so the message is seen; logout closes the page state
-  const isSelf = currentUser && currentUser.email===target.email;
-  alert('✅ Access revoked for '+target.name+'.');
-  if(isSelf) doLogout();
+async function revokeUser(id, name){
+  if(!confirm(`Revoke access for ${name}? They will be blocked on next login.`)) return;
+  try{
+    await apiFetch(`/api/admin/users/${id}/revoke`,{ method:'PATCH' });
+    await renderAdminUserList();
+    alert('✅ Access revoked for '+name+'.');
+  } catch(e){ alert('Error: '+e.message); }
 }
 
-function restoreUser(idx){
-  const users=loadUsers();
-  if(!users[idx]) return;
-  users[idx].active=true;
-  saveUsers(users);
-  renderAdminUserList();
-  alert('✅ Access restored for '+users[idx].name+'.');
-}
-
-function deleteUser(idx){
-  const users=loadUsers();
-  if(!users[idx]) return;
-  const isSelf = currentUser && currentUser.email===users[idx].email;
-  if(isSelf){ alert('You cannot delete your own account.'); return; }
-  if(!confirm(`Permanently delete user "${users[idx].name}"? This cannot be undone.`)) return;
-  users.splice(idx,1);
-  saveUsers(users);
-  renderAdminUserList();
+async function restoreUser(id, name){
+  try{
+    await apiFetch(`/api/admin/users/${id}/restore`,{ method:'PATCH' });
+    await renderAdminUserList();
+    alert('✅ Access restored for '+name+'.');
+  } catch(e){ alert('Error: '+e.message); }
 }
 
 /* ── Admin reset another user's password ── */
-async function adminResetPwd(idx){
-  const users=loadUsers();
-  const newPwd=prompt(`Set new password for ${users[idx].name} (${users[idx].email}):\n(min 6 characters)`);
+async function adminResetPwd(id, name, email){
+  const newPwd=prompt(`Set new password for ${name} (${email}):\n(min 6 characters)`);
   if(!newPwd) return;
   if(newPwd.length<6){ alert('Password too short (min 6 characters).'); return; }
-  users[idx].pwdHash=await hashPwd(newPwd);
-  saveUsers(users);
-  alert(`✅ Password reset for ${users[idx].name}.\nShare new password: ${newPwd}`);
+  try{
+    await apiFetch(`/api/admin/users/${id}/reset-password`,{
+      method:'POST',
+      body: JSON.stringify({new_password:newPwd})
+    });
+    alert(`✅ Password reset for ${name}.\nShare new password: ${newPwd}`);
+  } catch(e){ alert('Error: '+e.message); }
 }
 
 // ═══════════════════════════════════════════════════
