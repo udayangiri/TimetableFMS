@@ -2636,7 +2636,7 @@ async function adminAddUser(){
   try{
     await apiFetch('/api/admin/users',{
       method:'POST',
-      body: JSON.stringify({email, name, role, password:pwd, tab_perms})
+      body: JSON.stringify({email, name, role, password:pwd, tabPerms: tab_perms})
     });
     document.getElementById('adm-email').value='';
     document.getElementById('adm-name').value='';
@@ -2716,7 +2716,7 @@ async function savePermissions(){
   try{
     await apiFetch(`/api/admin/users/${_permEditId}/permissions`,{
       method:'PATCH',
-      body: JSON.stringify({tab_perms})
+      body: JSON.stringify({tabPerms: tab_perms})
     });
     document.getElementById('perm-modal').classList.remove('open');
     await renderAdminUserList();
